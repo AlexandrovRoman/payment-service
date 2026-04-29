@@ -1,9 +1,3 @@
-"""Payment API endpoints.
-
-POST /api/v1/payments   - create a payment (202 Accepted)
-GET  /api/v1/payments/{payment_id} - get payment details
-"""
-
 import logging
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -13,7 +7,8 @@ from payment_service.api.v1.schemas import (
     CreatePaymentResponse,
     PaymentDetailResponse,
 )
-from payment_service.db.repositories import PaymentRepository
+from payment_service.core.exceptions import PaymentNotFoundError
+from payment_service.db.repositories import OutboxRepository, PaymentRepository
 from payment_service.db.session import DbSession
 from payment_service.services.payment_service import PaymentService
 
@@ -33,14 +28,7 @@ async def create_payment(
     db: DbSession,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ) -> CreatePaymentResponse:
-    """Accepts a payment creation request.
-
-    - Validates the request body.
-    - Deduplicates using the `Idempotency-Key` header.
-    - Persists the payment and enqueues a processing event via Outbox.
-    - Returns **202 Accepted** immediately; actual processing is async.
-    """
-    svc = PaymentService(db)
+    svc = PaymentService(PaymentRepository(db), OutboxRepository(db))
     return await svc.create_payment(
         idempotency_key=idempotency_key,
         amount=body.amount,
@@ -57,12 +45,13 @@ async def create_payment(
     summary="Get payment details",
 )
 async def get_payment(payment_id: str, db: DbSession) -> PaymentDetailResponse:
-    """Return full details of a payment by its ID."""
-    repo = PaymentRepository(db)
-    payment = await repo.get_by_id(payment_id)
-    if payment is None:
+    svc = PaymentService(PaymentRepository(db), OutboxRepository(db))
+    try:
+        payment = await svc.get_payment(payment_id)
+    except PaymentNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Payment '{payment_id}' not found",
-        )
-    return PaymentDetailResponse.model_validate(payment)
+            detail=str(e),
+        ) from e
+
+    return payment

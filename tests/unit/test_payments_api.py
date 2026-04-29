@@ -1,5 +1,7 @@
 """Unit tests for the payment creation API endpoint."""
 
+import asyncio
+
 import pytest
 from httpx import AsyncClient
 
@@ -21,19 +23,17 @@ async def test_create_payment_returns_202(client: AsyncClient, payment_payload: 
 @pytest.mark.asyncio
 async def test_create_payment_idempotency(client: AsyncClient, payment_payload: dict) -> None:
     """Same idempotency key should return the same payment."""
-    r1 = await client.post(
-        "/api/v1/payments",
-        json=payment_payload,
-        headers={"Idempotency-Key": "key-idem"},
-    )
-    r2 = await client.post(
-        "/api/v1/payments",
-        json=payment_payload,
-        headers={"Idempotency-Key": "key-idem"},
-    )
-    assert r1.status_code == 202
-    assert r2.status_code == 202
-    assert r1.json()["payment_id"] == r2.json()["payment_id"]
+    tasks = [
+        client.post(
+            "/api/v1/payments",
+            json=payment_payload,
+            headers={"Idempotency-Key": "key-idem"},
+        )
+        for _ in range(3)
+    ]
+    responses = await asyncio.gather(*tasks)
+    assert all(r.status_code == 202 for r in responses)
+    assert len({r.json()["payment_id"] for r in responses}) == 1
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,9 @@
-"""Payment ORM model."""
-
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import JSON, DateTime, Enum, Index, Numeric, String, Text, func
+from sqlalchemy import DateTime, Enum, Numeric, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from payment_service.db.base import Base
@@ -23,26 +22,36 @@ class PaymentStatus(StrEnum):
 
 
 class Payment(Base):
-    """Represents a single payment transaction."""
-
     __tablename__ = "payments"
 
-    id: Mapped[str] = mapped_column(String(26), primary_key=True)
-    """ULID-based unique identifier."""
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)  # ulid-based id
 
     idempotency_key: Mapped[str] = mapped_column(
         String(255), unique=True, nullable=False, index=True
     )
-    """Client-supplied key for deduplication."""
-
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
-    currency: Mapped[Currency] = mapped_column(Enum(Currency, name="currency_enum"), nullable=False)
+    currency: Mapped[Currency] = mapped_column(
+        Enum(
+            Currency,
+            name="currency_enum",
+            inherit_schema=True,
+            values_callable=lambda e: [field.value for field in e],
+            create_type=False,
+        ),
+        nullable=False,
+    )
     description: Mapped[str | None] = mapped_column(Text)
-    metadata_: Mapped[dict | None] = mapped_column("metadata", JSON)
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB)
     webhook_url: Mapped[str | None] = mapped_column(Text)
 
     status: Mapped[PaymentStatus] = mapped_column(
-        Enum(PaymentStatus, name="payment_status_enum"),
+        Enum(
+            PaymentStatus,
+            name="payment_status_enum",
+            inherit_schema=True,
+            values_callable=lambda e: [field.value for field in e],
+            create_type=False,
+        ),
         nullable=False,
         default=PaymentStatus.PENDING,
         server_default=PaymentStatus.PENDING.value,
@@ -54,8 +63,6 @@ class Payment(Base):
         server_default=func.now(),
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (Index("ix_payments_status_created_at", "status", "created_at"),)
 
     def __repr__(self) -> str:
         return (

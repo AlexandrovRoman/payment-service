@@ -27,16 +27,16 @@ typecheck: ## Run mypy type checker
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 test: ## Run tests
-	uv run pytest tests/
+	export ENV_FILE=test.env && uv run pytest tests/
 
 test-unit: ## Run only unit tests
-	uv run pytest tests/unit/
+	export ENV_FILE=test.env && uv run pytest tests/unit/
 
 test-integration: ## Run only integration tests (requires running services)
-	uv run pytest tests/integration/
+	export ENV_FILE=test.env && uv run pytest tests/integration/
 
 test-cov: ## Run tests with coverage report
-	uv run pytest --cov=payment_service --cov-report=html tests/
+	export ENV_FILE=test.env && uv run pytest --cov=payment_service --cov-report=html tests/
 
 # ── Database ──────────────────────────────────────────────────────────────────
 migrate: ## Apply all pending migrations

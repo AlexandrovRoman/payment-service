@@ -1,21 +1,18 @@
-"""Payment repository - data access layer for Payment entities."""
-
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from payment_service.db.models.payment import Currency, Payment, PaymentStatus
 
 
 class PaymentRepository:
-    """All database operations related to the Payment aggregate."""
-
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create(
+    async def create_if_not_exists(
         self,
         *,
         payment_id: str,
@@ -25,20 +22,26 @@ class PaymentRepository:
         description: str | None = None,
         metadata: dict | None = None,
         webhook_url: str | None = None,
-    ) -> Payment:
+    ) -> Payment | None:
         """Persist a new payment in PENDING state."""
-        payment = Payment(
-            id=payment_id,
-            idempotency_key=idempotency_key,
-            amount=amount,
-            currency=currency,
-            description=description,
-            metadata_=metadata,
-            webhook_url=webhook_url,
-            status=PaymentStatus.PENDING,
+        stmt = (
+            insert(Payment)
+            .values(
+                id=payment_id,
+                idempotency_key=idempotency_key,
+                amount=amount,
+                currency=currency,
+                description=description,
+                metadata_=metadata,
+                webhook_url=webhook_url,
+                status=PaymentStatus.PENDING,
+            )
+            .on_conflict_do_nothing(index_elements=["idempotency_key"])
+            .returning(Payment)
         )
-        self._session.add(payment)
-        await self._session.flush()  # assigns server defaults without committing
+
+        result = await self._session.execute(stmt)
+        payment = result.scalar_one_or_none()
         return payment
 
     async def get_by_id(self, payment_id: str) -> Payment | None:

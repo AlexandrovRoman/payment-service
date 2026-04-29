@@ -13,10 +13,13 @@ COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /app
 
 # Copy dependency files first (better layer caching)
-COPY pyproject.toml .python-version ./
-COPY src/ ./src/
+COPY pyproject.toml uv.lock .python-version README.md ./
 
 # Install production dependencies only into /app/.venv
+RUN uv sync --no-dev --frozen --no-install-project
+
+COPY src/ ./src/
+
 RUN uv sync --no-dev --frozen
 
 # ── Stage 3: production ─────────────────────────────────────────────────────
@@ -34,7 +37,7 @@ COPY --from=builder /app/src /app/src
 
 # Copy alembic config and migrations
 COPY alembic.ini ./
-COPY alembic/ ./alembic/
+COPY migrations/ ./migrations/
 
 # Put venv on PATH
 ENV PATH="/app/.venv/bin:$PATH" \

@@ -2,42 +2,6 @@
 
 Async payment processing microservice built with **FastAPI**, **SQLAlchemy 2.0**, **RabbitMQ (FastStream)**, and the **Outbox pattern** for guaranteed event delivery.
 
-## Architecture
-
-```
-┌──────────────┐   POST /payments    ┌─────────────────────────────────────┐
-│    Client    │ ──────────────────► │  FastAPI (API)                      │
-│              │ ◄──────────────────  │  • Validates request                │
-│              │   202 Accepted      │  • Idempotency check                │
-└──────────────┘                     │  • Writes Payment + OutboxEvent (tx) │
-       ▲                             └──────────────┬──────────────────────┘
-       │ Webhook                                    │ same DB transaction
-       │                             ┌──────────────▼──────────────────────┐
-       │                             │  PostgreSQL                          │
-       │                             │  • payments table                    │
-       │                             │  • outbox_events table               │
-       │                             └──────────────┬──────────────────────┘
-       │                                            │ poller (every 1s)
-       │                             ┌──────────────▼──────────────────────┐
-       │                             │  Outbox Publisher (background task) │
-       │                             │  • Reads pending outbox events       │
-       │                             │  • Publishes to RabbitMQ             │
-       │                             └──────────────┬──────────────────────┘
-       │                                            │ AMQP
-       │                             ┌──────────────▼──────────────────────┐
-       │                             │  RabbitMQ                            │
-       │                             │  payments exchange → payments.new    │
-       │                             │  (DLX → payments.new.dlq on fail)   │
-       │                             └──────────────┬──────────────────────┘
-       │                                            │ consumer
-       │                             ┌──────────────▼──────────────────────┐
-       └─────────────────────────────│  Consumer Worker                     │
-                                     │  • Gateway emulation (2–5s, 90% ok) │
-                                     │  • Updates payment status in DB      │
-                                     │  • Sends webhook (3 retries, exp BO) │
-                                     └─────────────────────────────────────┘
-```
-
 ## Tech Stack
 
 | Layer | Technology |
@@ -63,14 +27,10 @@ Async payment processing microservice built with **FastAPI**, **SQLAlchemy 2.0**
 ### 1. Start with Docker Compose
 
 ```bash
-# Clone and enter project
-git clone <repo-url>
 cd payment-service
+cp .env.example .env
 
-# Start everything (postgres, rabbitmq, api, worker)
 make docker-build
-
-# Follow logs
 make docker-logs
 ```
 
@@ -180,7 +140,9 @@ When processing completes, we POST to your `webhook_url`:
 ## Running Tests
 
 ```bash
-# All unit tests (no Docker needed)
+docker compose up -d postgres
+
+# All unit tests
 make test-unit
 
 # With coverage report
@@ -203,19 +165,3 @@ make docker-logs-api    # follow API logs
 make docker-logs-worker # follow consumer logs
 make docker-down-v      # stop + remove volumes
 ```
-
-## Key Design Decisions
-
-**Outbox Pattern** — The API never writes to RabbitMQ directly. Instead it writes
-a `payment` + an `outbox_event` in the same Postgres transaction, then a background
-task publishes the event. This eliminates the dual-write problem and guarantees
-at-least-once delivery even if the broker is temporarily unavailable.
-
-**Idempotency** — The `Idempotency-Key` header (required) ensures safe client retries.
-If the same key is received twice, the original payment is returned.
-
-**Dead Letter Queue** — After 3 processing failures, messages are nacked and
-automatically routed by RabbitMQ to `payments.new.dlq` for manual inspection.
-
-**ULID IDs** — Universally Unique Lexicographically Sortable Identifiers are used
-instead of UUIDs for time-sortable, URL-safe payment IDs.

@@ -9,10 +9,10 @@ import asyncio
 import logging
 import random
 
-from payment_service.core.settings import get_settings
+from payment_service.core.exceptions import ExternalPaymentServiceError
+from payment_service.core.settings import settings
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 
 class GatewayResult:
@@ -36,7 +36,7 @@ async def process_payment(payment_id: str, amount: str, currency: str) -> Gatewa
     Returns:
         GatewayResult with success=True or False.
     """
-    delay = random.uniform(settings.gateway_min_delay, settings.gateway_max_delay)  # noqa: S311
+    delay = random.uniform(settings.gateway_min_delay_sec, settings.gateway_max_delay_sec)  # noqa: S311
     logger.debug(
         "Gateway processing payment",
         extra={"payment_id": payment_id, "delay": round(delay, 2)},
@@ -48,5 +48,4 @@ async def process_payment(payment_id: str, amount: str, currency: str) -> Gatewa
         logger.info("Gateway approved payment", extra={"payment_id": payment_id})
         return GatewayResult(success=True, message="approved")
     else:
-        logger.warning("Gateway declined payment", extra={"payment_id": payment_id})
-        return GatewayResult(success=False, message="declined_by_gateway")
+        raise ExternalPaymentServiceError("Timeout")

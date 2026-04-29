@@ -1,16 +1,13 @@
-"""Outbox repository - data access for the Outbox pattern."""
+from datetime import UTC, datetime, timedelta
 
-from datetime import UTC, datetime
-
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from payment_service.core.settings import settings
 from payment_service.db.models.outbox import OutboxEvent, OutboxStatus
 
 
 class OutboxRepository:
-    """All database operations related to OutboxEvent entities."""
-
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
@@ -24,7 +21,6 @@ class OutboxRepository:
         payload: dict,
         routing_key: str,
     ) -> OutboxEvent:
-        """Insert a new PENDING outbox event (call inside the same transaction)."""
         event = OutboxEvent(
             id=event_id,
             aggregate_type=aggregate_type,
@@ -38,19 +34,29 @@ class OutboxRepository:
         await self._session.flush()
         return event
 
+    async def get_payment_event(self, *, payment_id: str) -> OutboxEvent | None:
+        result = await self._session.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == payment_id,
+                OutboxEvent.aggregate_type == "payment",
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_pending_events(self, limit: int = 100) -> list[OutboxEvent]:
-        """Return up to *limit* unpublished events ordered by creation time."""
         result = await self._session.execute(
             select(OutboxEvent)
-            .where(OutboxEvent.status == OutboxStatus.PENDING)
+            .where(
+                OutboxEvent.status == OutboxStatus.PENDING,
+                ((OutboxEvent.next_retry_at.is_(None)) | (OutboxEvent.next_retry_at <= func.now())),
+            )
             .order_by(OutboxEvent.created_at.asc())
             .limit(limit)
-            .with_for_update(skip_locked=True)  # safe for concurrent pollers
+            .with_for_update(skip_locked=True)
         )
         return list(result.scalars().all())
 
     async def mark_published(self, event: OutboxEvent) -> None:
-        """Mark event as successfully published."""
         await self._session.execute(
             update(OutboxEvent)
             .where(OutboxEvent.id == event.id)
@@ -61,13 +67,15 @@ class OutboxRepository:
             )
         )
 
-    async def mark_failed(self, event: OutboxEvent, error: str) -> None:
-        """Mark event as permanently failed."""
-        await self._session.execute(
-            update(OutboxEvent)
-            .where(OutboxEvent.id == event.id)
-            .values(
-                status=OutboxStatus.FAILED,
-                error_message=error[:2000],  # cap at 2000 chars
-            )
-        )
+    async def mark_to_resend(self, event: OutboxEvent, error: str) -> None:
+        attempts = event.attempts + 1
+        event.attempts = attempts
+        event.error_message = error
+
+        if attempts >= settings.max_retry_attempts:
+            event.status = OutboxStatus.FAILED
+            event.next_retry_at = None
+        else:
+            backoff = settings.base_backoff_sec + settings.backoff_factor ** (attempts - 1)
+            event.status = OutboxStatus.PENDING
+            event.next_retry_at = datetime.utcnow() + timedelta(seconds=backoff)

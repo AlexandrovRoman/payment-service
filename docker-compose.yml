@@ -5,10 +5,7 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: payment
-      POSTGRES_PASSWORD: payment
-      POSTGRES_DB: payment_db
+    env_file: .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -19,12 +16,22 @@ services:
       timeout: 5s
       retries: 10
 
+  postgres_test:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: test.env
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U payment_test -d payment_test_db" ]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: payment
-      RABBITMQ_DEFAULT_PASS: payment
+    env_file: .env
     ports:
       - "5672:5672"
       - "15672:15672"   # Management UI
@@ -44,10 +51,7 @@ services:
       dockerfile: Dockerfile
       target: production
     command: ["alembic", "upgrade", "head"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://payment:payment@postgres/payment_db
-      RABBITMQ_URL: amqp://payment:payment@rabbitmq/
-      API_KEY: super-secret-key
+    env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,11 +65,7 @@ services:
     command: ["uvicorn", "payment_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
-    environment:
-      DATABASE_URL: postgresql+asyncpg://payment:payment@postgres/payment_db
-      RABBITMQ_URL: amqp://payment:payment@rabbitmq/
-      API_KEY: super-secret-key
-      DEBUG: "false"
+    env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,11 +86,7 @@ services:
       dockerfile: Dockerfile
       target: production
     command: ["python", "-m", "payment_service.workers.consumer"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://payment:payment@postgres/payment_db
-      RABBITMQ_URL: amqp://payment:payment@rabbitmq/
-      API_KEY: super-secret-key
-      DEBUG: "false"
+    env_file: .env
     depends_on:
       postgres:
         condition: service_healthy

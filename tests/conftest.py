@@ -1,58 +1,102 @@
-"""Shared pytest fixtures.
-
-Uses in-memory SQLite for unit tests (fast, no Docker needed).
-"""
-
-import os
 from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-# Must set env vars BEFORE importing any payment_service module
-os.environ["DATABASE_URL"] = "postgresql+asyncpg://test:test@localhost/test"
-os.environ["RABBITMQ_URL"] = "amqp://guest:guest@localhost/"
-os.environ["API_KEY"] = "test-key"
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from payment_service.db.base import Base
+from payment_service.db.models import Currency, OutboxStatus, PaymentStatus
 from payment_service.db.session import get_db
-from payment_service.main import create_app
+from payment_service.main import create_app, settings
 
-# ── SQLite in-memory engine for unit tests ────────────────────────────────────
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-TestSessionLocal = async_sessionmaker(bind=test_engine, expire_on_commit=False)
+_TEST_DB_URL = str(settings.database_url)
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def create_tables() -> AsyncGenerator[None, None]:
-    """Create all tables before each test and drop them after."""
-    async with test_engine.begin() as conn:
+@pytest_asyncio.fixture(scope="function")
+async def pg_schema() -> AsyncGenerator[str, None]:
+    schema = "test_main"
+
+    admin = create_async_engine(_TEST_DB_URL, isolation_level="AUTOCOMMIT")
+    async with admin.connect() as conn:
+        await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+        await conn.execute(text(f'SET search_path TO "{schema}", public'))
+    await admin.dispose()
+
+    yield schema
+
+
+@pytest_asyncio.fixture(scope="function")
+async def test_engine(pg_schema: str) -> AsyncGenerator[AsyncEngine, None]:
+    engine = create_async_engine(
+        _TEST_DB_URL,
+        pool_size=5,
+        max_overflow=0,
+        pool_timeout=10,
+        echo=False,
+    )
+
+    engine = engine.execution_options(schema_translate_map={None: pg_schema})
+
+    async with engine.begin() as conn:
+        await _create_enum_types(conn, pg_schema)
+
+        for table in Base.metadata.tables.values():
+            table.schema = pg_schema
+
         await conn.run_sync(Base.metadata.create_all)
-    yield
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+
+    yield engine
+    await engine.dispose()
 
 
-@pytest_asyncio.fixture
-async def db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Provide a test database session."""
-    async with TestSessionLocal() as session:
+async def _create_enum_types(conn: AsyncConnection, schema: str) -> None:
+    enums = [
+        ("currency_enum", Currency),
+        ("payment_status_enum", PaymentStatus),
+        ("outbox_status_enum", OutboxStatus),
+    ]
+
+    for type_name, enum_cls in enums:
+        values = [e.value for e in enum_cls]
+        await conn.execute(
+            text(f"""
+            DO $$
+            BEGIN
+                CREATE TYPE "{schema}".{type_name} AS ENUM ({", ".join(f"'{v}'" for v in values)});
+            EXCEPTION WHEN duplicate_object THEN
+                NULL;
+            END $$;
+        """)
+        )
+
+
+@pytest_asyncio.fixture(scope="function")
+async def db_session(test_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
+    factory = async_sessionmaker(
+        bind=test_engine,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    async with factory() as session:
         yield session
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="function")
 async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
-    """HTTP test client with overridden DB dependency and API key."""
     app = create_app()
 
-    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
-    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_db] = _override_get_db
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -62,11 +106,8 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
 
-# ── Common test data ───────────────────────────────────────────────────────────
-
-
 @pytest.fixture
-def payment_payload() -> dict:
+def payment_payload() -> dict[str, object]:
     return {
         "amount": "100.00",
         "currency": "RUB",

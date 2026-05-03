@@ -1,9 +1,8 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from payment_service.core.settings import settings
 from payment_service.db.models.outbox import OutboxEvent, OutboxStatus
 
 
@@ -48,7 +47,6 @@ class OutboxRepository:
             select(OutboxEvent)
             .where(
                 OutboxEvent.status == OutboxStatus.PENDING,
-                ((OutboxEvent.next_retry_at.is_(None)) | (OutboxEvent.next_retry_at <= func.now())),
             )
             .order_by(OutboxEvent.created_at.asc())
             .limit(limit)
@@ -66,16 +64,3 @@ class OutboxRepository:
                 error_message=None,
             )
         )
-
-    async def mark_to_resend(self, event: OutboxEvent, error: str) -> None:
-        attempts = event.attempts + 1
-        event.attempts = attempts
-        event.error_message = error
-
-        if attempts >= settings.max_retry_attempts:
-            event.status = OutboxStatus.FAILED
-            event.next_retry_at = None
-        else:
-            backoff = settings.base_backoff_sec + settings.backoff_factor ** (attempts - 1)
-            event.status = OutboxStatus.PENDING
-            event.next_retry_at = datetime.utcnow() + timedelta(seconds=backoff)

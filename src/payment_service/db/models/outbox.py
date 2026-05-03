@@ -59,9 +59,6 @@ class OutboxEvent(Base):
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    attempts: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
-    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
     __table_args__ = (
         # Index to efficiently find unpublished events for the poller
         Index(

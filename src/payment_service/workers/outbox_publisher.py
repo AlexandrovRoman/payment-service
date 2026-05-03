@@ -24,20 +24,6 @@ async def _publish_event(broker: RabbitBroker, event: OutboxEvent) -> None:
     )
 
 
-async def _publish_to_dlq(broker: RabbitBroker, event: OutboxEvent) -> None:
-    await broker.publish(
-        message=json.dumps(event.payload),
-        exchange=payments_exchange,
-        routing_key=f"{event.routing_key}.dlq",
-        content_type="application/json",
-        message_id=event.id,
-        headers={
-            "aggregate_type": event.aggregate_type,
-            "x-error": event.error_message or "",
-        },
-    )
-
-
 async def run_outbox_publisher(broker: RabbitBroker) -> None:
     logger.info("Outbox publisher started")
 
@@ -53,16 +39,26 @@ async def run_outbox_publisher(broker: RabbitBroker) -> None:
                     continue
 
                 for event in events:
-                    await _publish_event(broker, event)
-                    await outbox_repo.mark_published(event)
-
-                    logger.debug(
-                        "Outbox event published",
-                        extra={
-                            "event_id": event.id,
-                            "type": event.event_type,
-                        },
-                    )
+                    try:
+                        await _publish_event(broker, event)
+                    except Exception as exc:
+                        logger.exception(
+                            "Publish outbox event failed",
+                            extra={
+                                "error": str(exc),
+                                "event_id": event.id,
+                                "type": event.event_type,
+                            },
+                        )
+                    else:
+                        await outbox_repo.mark_published(event)
+                        logger.debug(
+                            "Outbox event published",
+                            extra={
+                                "event_id": event.id,
+                                "type": event.event_type,
+                            },
+                        )
 
                 await session.commit()
 

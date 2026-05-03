@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,13 +54,40 @@ class PaymentRepository:
         result = await self._session.execute(select(Payment).where(Payment.idempotency_key == key))
         return result.scalar_one_or_none()
 
-    async def update_status(
+    async def take_to_processing(self, payment_id: str) -> Payment | None:
+        """Process a payment by its primary key."""
+        result = await self._session.execute(
+            update(Payment)
+            .where(
+                Payment.id == payment_id,
+                Payment.status == PaymentStatus.PENDING,
+            )
+            .values(status=PaymentStatus.PROCESSING)
+            .returning(Payment)
+        )
+        return result.scalar_one_or_none()
+
+    async def rollback_to_pending(self, payment_id: str) -> Payment | None:
+        result = await self._session.execute(
+            update(Payment)
+            .where(Payment.id == payment_id)
+            .values(status=PaymentStatus.PENDING)
+            .returning(Payment)
+        )
+        return result.scalar_one_or_none()
+
+    async def update_status_if_pending(
         self,
-        payment: Payment,
+        payment_id: str,
         status: PaymentStatus,
-    ) -> Payment:
-        """Update payment status and set processed_at timestamp."""
-        payment.status = status
-        payment.processed_at = datetime.now(UTC)
-        await self._session.flush()
-        return payment
+    ) -> Payment | None:
+        result = await self._session.execute(
+            update(Payment)
+            .where(
+                Payment.id == payment_id,
+                Payment.status == PaymentStatus.PENDING,
+            )
+            .values(status=status, processed_at=datetime.now(UTC))
+            .returning(Payment)
+        )
+        return result.scalar_one_or_none()
